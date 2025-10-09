@@ -1,0 +1,9 @@
+FROM ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
+USER root
+
+RUN apt update && apt install -y wget build-essential curl unzip ca-certificates jq binutils git libclang-dev libssl-dev pkg-config protobuf-compiler libpcap-dev
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.0.30.zip" -o "awscliv2.zip"
+RUN unzip awscliv2.zip
+RUN ./aws/install
