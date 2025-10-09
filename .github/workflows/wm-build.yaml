@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract-version:
+    name: Extract version
+    runs-on: arc-runner-set
+    container:
+      image: 111789616134.dkr.ecr.eu-west-2.amazonaws.com/evm-rpc-test
+    outputs:
+      VERSION: ${{ steps.extract_version.outputs.VERSION }}
+    steps:
+      - name: Extract version
+        id: extract_version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="$(echo ${GITHUB_SHA} | cut -c1-7)"
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+
+          echo "|                     |                        |" >> $GITHUB_STEP_SUMMARY
+          echo "| ------------------- | ---------------------- |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`GITHUB_REF_TYPE\` | \`${GITHUB_REF_TYPE}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`GITHUB_REF_NAME\` | \`${GITHUB_REF_NAME}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`GITHUB_REF\`      | \`${GITHUB_REF}\`      |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`GITHUB_SHA\`      | \`${GITHUB_SHA}\`      |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`VERSION\`         | \`${VERSION}\`         |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`FEATURES\`        | \`${{ github.event.inputs.features || 'none' }}\` |" >> $GITHUB_STEP_SUMMARY
+
+  build-binary:
+    name: Build binary
+    needs: extract-version
+    runs-on: arc-runner-set
+    container:
+      image: 111789616134.dkr.ecr.eu-west-2.amazonaws.com/evm-rpc-test
+    permissions:
+      id-token: write
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4 # must install git before checkout and set safe.directory after checkout because of container
+      - name: Build evm-rpc-test binary
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          . $HOME/.cargo/env
+          cargo build --release
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        name: Configure AWS Credentials
+        with:
+          aws-region: "eu-central-1"
+          role-to-assume: "arn:aws:iam::111789616134:role/github-oidc-provider-aws"
+      - name: Publish
+        shell: bash
+        run: |
+          aws s3 cp target/release/evm-rpc-test s3://wmdefi-artifact-bucket/evm-rpc-test-releases/${{ needs.extract-version.outputs.VERSION }}/evm-rpc-test
