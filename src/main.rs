@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{StreamExt, SinkExt};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Multi-Chain EVM RPC Test Harness", long_about = None)]
@@ -47,7 +47,7 @@ enum ChainType {
     Optimism,
     Arbitrum,
     Ethereum,
-    BSC,
+    Bsc,
     Base,
     Unknown,
 }
@@ -104,7 +104,14 @@ impl NodeType {
     }
 
     fn supports_trace_namespace(&self) -> bool {
-        matches!(self, NodeType::Reth | NodeType::OpReth | NodeType::Geth | NodeType::OpGeth | NodeType::BSCGeth)
+        matches!(
+            self,
+            NodeType::Reth
+                | NodeType::OpReth
+                | NodeType::Geth
+                | NodeType::OpGeth
+                | NodeType::BSCGeth
+        )
     }
 }
 
@@ -115,7 +122,7 @@ impl ChainType {
             10 | 11155420 => ChainType::Optimism,
             42161 | 421614 => ChainType::Arbitrum,
             8453 | 84532 => ChainType::Base,
-            56 | 97 => ChainType::BSC,
+            56 | 97 => ChainType::Bsc,
             _ => ChainType::Unknown,
         }
     }
@@ -125,7 +132,7 @@ impl ChainType {
             "optimism" | "op" => ChainType::Optimism,
             "arbitrum" | "arb" => ChainType::Arbitrum,
             "ethereum" | "eth" | "geth" => ChainType::Ethereum,
-            "bsc" | "binance" | "bnb" => ChainType::BSC,
+            "bsc" | "binance" | "bnb" => ChainType::Bsc,
             _ => ChainType::Unknown,
         }
     }
@@ -135,7 +142,7 @@ impl ChainType {
             ChainType::Optimism => "Optimism",
             ChainType::Arbitrum => "Arbitrum",
             ChainType::Ethereum => "Ethereum",
-            ChainType::BSC => "BNB Smart Chain (BSC)",
+            ChainType::Bsc => "BNB Smart Chain (BSC)",
             ChainType::Base => "Base",
             ChainType::Unknown => "Unknown",
         }
@@ -146,7 +153,7 @@ impl ChainType {
             ChainType::Optimism => "0x4200000000000000000000000000000000000006", // OP token
             ChainType::Arbitrum => "0x912CE59144191C1204E64559FE8253a0e49E6548", // ARB token
             ChainType::Ethereum => "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", // USDC
-            ChainType::BSC => "0x55d398326f99059fF775485246999027E3197955", // USDT on BSC
+            ChainType::Bsc => "0x55d398326f99059fF775485246999027E3197955",      // USDT on BSC
             ChainType::Base => "0x4200000000000000000000000000000000000006", // WETH on Base (system contract)
             ChainType::Unknown => "0x4200000000000000000000000000000000000006", // System contract as fallback
         }
@@ -188,9 +195,15 @@ struct RpcClient {
 }
 
 impl RpcClient {
-    fn new(url: String, timeout_secs: u64, verbose: bool, chain_type: ChainType, node_type: NodeType) -> Self {
+    fn new(
+        url: String,
+        timeout_secs: u64,
+        verbose: bool,
+        chain_type: ChainType,
+        node_type: NodeType,
+    ) -> Self {
         let is_websocket = url.starts_with("ws://") || url.starts_with("wss://");
-        
+
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
@@ -292,21 +305,21 @@ impl RpcClient {
         let (mut write, mut read) = ws_stream.split();
 
         let msg = Message::Text(serde_json::to_string(&request)?);
-        write.send(msg).await.context("Failed to send WebSocket message")?;
-
-        let response = read
-            .next()
+        write
+            .send(msg)
             .await
-            .context("No response from WebSocket")??;
+            .context("Failed to send WebSocket message")?;
+
+        let response = read.next().await.context("No response from WebSocket")??;
 
         let response_text = response.to_text()?;
-        
+
         if self.verbose {
             println!("  ← WS Response: {}", response_text);
         }
 
-        let rpc_response: RpcResponse<T> = serde_json::from_str(response_text)
-            .context("Failed to parse WebSocket response")?;
+        let rpc_response: RpcResponse<T> =
+            serde_json::from_str(response_text).context("Failed to parse WebSocket response")?;
 
         if let Some(error) = rpc_response.error {
             anyhow::bail!("RPC error: {} (code: {})", error.message, error.code);
@@ -366,10 +379,10 @@ async fn run_test<F, Fut>(
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    if let Some(f) = filter {
-        if !test_name.to_lowercase().contains(&f.to_lowercase()) {
-            return;
-        }
+    if let Some(f) = filter
+        && !test_name.to_lowercase().contains(&f.to_lowercase())
+    {
+        return;
     }
 
     let label = if optional {
@@ -387,7 +400,11 @@ async fn run_test<F, Fut>(
         Err(e) => {
             let err_str = e.to_string();
             // Check if it's a "method not available" error for optional tests
-            if optional && (err_str.contains("does not exist") || err_str.contains("not available") || err_str.contains("-32601")) {
+            if optional
+                && (err_str.contains("does not exist")
+                    || err_str.contains("not available")
+                    || err_str.contains("-32601"))
+            {
                 println!("⊘ SKIP (method not available on this node)");
                 // Don't count as failure for optional tests
             } else {
@@ -418,12 +435,16 @@ async fn test_subscribe_new_heads(client: &RpcClient, duration_secs: u64) -> Res
         "params": ["newHeads"]
     });
 
-    write.send(Message::Text(serde_json::to_string(&subscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&subscribe_request)?))
+        .await?;
 
     let response = read.next().await.context("No subscription response")??;
     let sub_response: serde_json::Value = serde_json::from_str(response.to_text()?)?;
-    let sub_id = sub_response["result"].as_str().context("No subscription ID")?;
-    
+    let sub_id = sub_response["result"]
+        .as_str()
+        .context("No subscription ID")?;
+
     println!("  Subscription ID: {}", sub_id);
 
     let mut event_count = 0;
@@ -462,7 +483,9 @@ async fn test_subscribe_new_heads(client: &RpcClient, duration_secs: u64) -> Res
         "params": [sub_id]
     });
 
-    write.send(Message::Text(serde_json::to_string(&unsubscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&unsubscribe_request)?))
+        .await?;
     println!("  Total events received: {}", event_count);
     Ok(())
 }
@@ -484,12 +507,16 @@ async fn test_subscribe_logs(client: &RpcClient, duration_secs: u64) -> Result<(
         "params": ["logs", {"address": contract}]
     });
 
-    write.send(Message::Text(serde_json::to_string(&subscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&subscribe_request)?))
+        .await?;
 
     let response = read.next().await.context("No subscription response")??;
     let sub_response: serde_json::Value = serde_json::from_str(response.to_text()?)?;
-    let sub_id = sub_response["result"].as_str().context("No subscription ID")?;
-    
+    let sub_id = sub_response["result"]
+        .as_str()
+        .context("No subscription ID")?;
+
     println!("  Subscription ID: {}", sub_id);
 
     let mut event_count = 0;
@@ -526,7 +553,9 @@ async fn test_subscribe_logs(client: &RpcClient, duration_secs: u64) -> Result<(
         "params": [sub_id]
     });
 
-    write.send(Message::Text(serde_json::to_string(&unsubscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&unsubscribe_request)?))
+        .await?;
     println!("  Total log events received: {}", event_count);
     Ok(())
 }
@@ -547,12 +576,16 @@ async fn test_subscribe_pending_transactions(client: &RpcClient, duration_secs: 
         "params": ["newPendingTransactions"]
     });
 
-    write.send(Message::Text(serde_json::to_string(&subscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&subscribe_request)?))
+        .await?;
 
     let response = read.next().await.context("No subscription response")??;
     let sub_response: serde_json::Value = serde_json::from_str(response.to_text()?)?;
-    let sub_id = sub_response["result"].as_str().context("No subscription ID")?;
-    
+    let sub_id = sub_response["result"]
+        .as_str()
+        .context("No subscription ID")?;
+
     println!("  Subscription ID: {}", sub_id);
 
     let mut event_count = 0;
@@ -591,7 +624,9 @@ async fn test_subscribe_pending_transactions(client: &RpcClient, duration_secs: 
         "params": [sub_id]
     });
 
-    write.send(Message::Text(serde_json::to_string(&unsubscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&unsubscribe_request)?))
+        .await?;
     println!("  Total pending transactions received: {}", event_count);
     Ok(())
 }
@@ -612,12 +647,16 @@ async fn test_subscribe_syncing(client: &RpcClient, duration_secs: u64) -> Resul
         "params": ["syncing"]
     });
 
-    write.send(Message::Text(serde_json::to_string(&subscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&subscribe_request)?))
+        .await?;
 
     let response = read.next().await.context("No subscription response")??;
     let sub_response: serde_json::Value = serde_json::from_str(response.to_text()?)?;
-    let sub_id = sub_response["result"].as_str().context("No subscription ID")?;
-    
+    let sub_id = sub_response["result"]
+        .as_str()
+        .context("No subscription ID")?;
+
     println!("  Subscription ID: {}", sub_id);
 
     let mut event_count = 0;
@@ -654,7 +693,9 @@ async fn test_subscribe_syncing(client: &RpcClient, duration_secs: u64) -> Resul
         "params": [sub_id]
     });
 
-    write.send(Message::Text(serde_json::to_string(&unsubscribe_request)?)).await?;
+    write
+        .send(Message::Text(serde_json::to_string(&unsubscribe_request)?))
+        .await?;
     println!("  Total syncing events received: {}", event_count);
     Ok(())
 }
@@ -664,9 +705,14 @@ async fn test_subscribe_syncing(client: &RpcClient, duration_secs: u64) -> Resul
 async fn test_eth_chain_id(client: &RpcClient) -> Result<()> {
     let chain_id: String = client.call("eth_chainId", json!([])).await?;
     let id = u64::from_str_radix(chain_id.trim_start_matches("0x"), 16)?;
-    
+
     let detected_chain = ChainType::from_chain_id(id);
-    println!("  Chain ID: {} ({} - {})", chain_id, id, detected_chain.name());
+    println!(
+        "  Chain ID: {} ({} - {})",
+        chain_id,
+        id,
+        detected_chain.name()
+    );
     Ok(())
 }
 
@@ -674,7 +720,7 @@ async fn test_eth_block_number(client: &RpcClient) -> Result<()> {
     let block_number: String = client.call("eth_blockNumber", json!([])).await?;
     let num = u64::from_str_radix(block_number.trim_start_matches("0x"), 16)?;
     println!("  Current block: {} ({})", block_number, num);
-    
+
     if num == 0 {
         anyhow::bail!("Block number should be greater than 0");
     }
@@ -684,7 +730,11 @@ async fn test_eth_block_number(client: &RpcClient) -> Result<()> {
 async fn test_eth_gas_price(client: &RpcClient) -> Result<()> {
     let gas_price: String = client.call("eth_gasPrice", json!([])).await?;
     let price = u64::from_str_radix(gas_price.trim_start_matches("0x"), 16)?;
-    println!("  Gas price: {} wei ({} gwei)", gas_price, price / 1_000_000_000);
+    println!(
+        "  Gas price: {} wei ({} gwei)",
+        gas_price,
+        price / 1_000_000_000
+    );
     Ok(())
 }
 
@@ -694,7 +744,7 @@ async fn test_eth_get_balance(client: &RpcClient) -> Result<()> {
         .call("eth_getBalance", json!([zero_address, "latest"]))
         .await?;
     println!("  Balance of zero address: {}", balance);
-    
+
     if !balance.starts_with("0x") {
         anyhow::bail!("Balance should start with 0x");
     }
@@ -706,7 +756,7 @@ async fn test_eth_get_transaction_count(client: &RpcClient) -> Result<()> {
     let count: String = client
         .call("eth_getTransactionCount", json!([sample_address, "latest"]))
         .await?;
-    
+
     let nonce = u64::from_str_radix(count.trim_start_matches("0x"), 16)?;
     println!("  Transaction count: {} ({})", count, nonce);
     Ok(())
@@ -716,13 +766,13 @@ async fn test_eth_get_block_by_number(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", false]))
         .await?;
-    
+
     let number = block["number"]
         .as_str()
         .context("Block should have number field")?;
     let num = u64::from_str_radix(number.trim_start_matches("0x"), 16)?;
     println!("  Block number: {} ({})", number, num);
-    
+
     if block.get("hash").is_none() {
         anyhow::bail!("Block should have hash field");
     }
@@ -734,16 +784,16 @@ async fn test_eth_get_block_by_hash(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", false]))
         .await?;
-    
+
     let hash = block["hash"]
         .as_str()
         .context("Block should have hash field")?;
-    
+
     // Now fetch by hash
     let block_by_hash: serde_json::Value = client
         .call("eth_getBlockByHash", json!([hash, false]))
         .await?;
-    
+
     let number = block_by_hash["number"]
         .as_str()
         .context("Block should have number field")?;
@@ -754,7 +804,7 @@ async fn test_eth_get_block_by_hash(client: &RpcClient) -> Result<()> {
 async fn test_eth_get_transaction_by_block_hash_and_index(client: &RpcClient) -> Result<()> {
     // Get a recent block with transactions
     let mut found_tx = false;
-    
+
     // Try last few blocks to find one with transactions
     for i in 0..10 {
         let block_tag = if i == 0 {
@@ -764,25 +814,26 @@ async fn test_eth_get_transaction_by_block_hash_and_index(client: &RpcClient) ->
             let latest_num = u64::from_str_radix(latest.trim_start_matches("0x"), 16)?;
             format!("0x{:x}", latest_num.saturating_sub(i))
         };
-        
+
         let block: serde_json::Value = client
             .call("eth_getBlockByNumber", json!([block_tag, false]))
             .await?;
-        
-        let hash = block["hash"]
-            .as_str()
-            .context("Block should have hash")?;
-        
+
+        let hash = block["hash"].as_str().context("Block should have hash")?;
+
         let txs = block["transactions"]
             .as_array()
             .context("Block should have transactions array")?;
-        
+
         if !txs.is_empty() {
             // Get first transaction by block hash and index
             let tx: serde_json::Value = client
-                .call("eth_getTransactionByBlockHashAndIndex", json!([hash, "0x0"]))
+                .call(
+                    "eth_getTransactionByBlockHashAndIndex",
+                    json!([hash, "0x0"]),
+                )
                 .await?;
-            
+
             if let Some(tx_hash) = tx.get("hash") {
                 println!("  Transaction at index 0: {}", tx_hash);
                 found_tx = true;
@@ -790,11 +841,11 @@ async fn test_eth_get_transaction_by_block_hash_and_index(client: &RpcClient) ->
             }
         }
     }
-    
+
     if !found_tx {
         println!("  No transactions found in recent blocks (this is OK for test nets)");
     }
-    
+
     Ok(())
 }
 
@@ -802,7 +853,7 @@ async fn test_eth_get_block_with_txs(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", true]))
         .await?;
-    
+
     let txs = block["transactions"]
         .as_array()
         .context("Block should have transactions array")?;
@@ -816,13 +867,13 @@ async fn test_eth_call(client: &RpcClient) -> Result<()> {
         "to": "0x0000000000000000000000000000000000000000",
         "data": "0x"
     });
-    
+
     let result: String = client
         .call("eth_call", json!([call_data, "latest"]))
         .await?;
-    
+
     println!("  Call result: {}", result);
-    
+
     if !result.starts_with("0x") {
         anyhow::bail!("Call result should start with 0x");
     }
@@ -835,7 +886,7 @@ async fn test_eth_estimate_gas(client: &RpcClient) -> Result<()> {
         "to": "0x0000000000000000000000000000000000000002",
         "value": "0x1"
     });
-    
+
     let estimate: String = client.call("eth_estimateGas", json!([tx])).await?;
     let gas = u64::from_str_radix(estimate.trim_start_matches("0x"), 16)?;
     println!("  Estimated gas: {} ({})", estimate, gas);
@@ -846,17 +897,21 @@ async fn test_eth_fee_history(client: &RpcClient) -> Result<()> {
     let history: serde_json::Value = client
         .call("eth_feeHistory", json!([4, "latest", [25, 50, 75]]))
         .await?;
-    
+
     if history.get("baseFeePerGas").is_none() {
         anyhow::bail!("Fee history should have baseFeePerGas");
     }
-    
+
     let base_fees = history["baseFeePerGas"].as_array().unwrap();
-    if let Some(latest_fee) = base_fees.last() {
-        if let Some(fee_str) = latest_fee.as_str() {
-            let fee = u64::from_str_radix(fee_str.trim_start_matches("0x"), 16)?;
-            println!("  Latest base fee: {} wei ({} gwei)", fee_str, fee / 1_000_000_000);
-        }
+    if let Some(latest_fee) = base_fees.last()
+        && let Some(fee_str) = latest_fee.as_str()
+    {
+        let fee = u64::from_str_radix(fee_str.trim_start_matches("0x"), 16)?;
+        println!(
+            "  Latest base fee: {} wei ({} gwei)",
+            fee_str,
+            fee / 1_000_000_000
+        );
     }
     Ok(())
 }
@@ -866,7 +921,7 @@ async fn test_eth_get_code(client: &RpcClient) -> Result<()> {
     let code: String = client
         .call("eth_getCode", json!([contract, "latest"]))
         .await?;
-    
+
     if code.len() > 2 {
         println!("  Contract code length: {} bytes", (code.len() - 2) / 2);
     } else {
@@ -880,25 +935,27 @@ async fn test_eth_get_transaction_receipt(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", true]))
         .await?;
-    
-    let txs = block["transactions"].as_array().context("No transactions array")?;
-    
-    if let Some(tx) = txs.first() {
-        if let Some(hash) = tx["hash"].as_str() {
-            let receipt: serde_json::Value = client
-                .call("eth_getTransactionReceipt", json!([hash]))
-                .await?;
-            
-            if let Some(status) = receipt.get("status") {
-                println!("  Receipt status: {}", status);
-            }
-            if let Some(gas_used) = receipt.get("gasUsed") {
-                println!("  Gas used: {}", gas_used);
-            }
-            return Ok(());
+
+    let txs = block["transactions"]
+        .as_array()
+        .context("No transactions array")?;
+
+    if let Some(tx) = txs.first()
+        && let Some(hash) = tx["hash"].as_str()
+    {
+        let receipt: serde_json::Value = client
+            .call("eth_getTransactionReceipt", json!([hash]))
+            .await?;
+
+        if let Some(status) = receipt.get("status") {
+            println!("  Receipt status: {}", status);
         }
+        if let Some(gas_used) = receipt.get("gasUsed") {
+            println!("  Gas used: {}", gas_used);
+        }
+        return Ok(());
     }
-    
+
     println!("  No transactions in latest block to get receipt");
     Ok(())
 }
@@ -910,7 +967,7 @@ async fn test_eth_get_logs(client: &RpcClient) -> Result<()> {
         "toBlock": "latest",
         "address": contract
     });
-    
+
     let logs: serde_json::Value = client.call("eth_getLogs", json!([filter])).await?;
     let log_array = logs.as_array().context("Logs should be an array")?;
     println!("  Found {} logs in latest block", log_array.len());
@@ -939,19 +996,22 @@ async fn test_eth_estimate_gas_bundle(client: &RpcClient) -> Result<()> {
         "value": "0x1",
         "gas": "0x5208"
     });
-    
+
     let bundle_args = json!({
         "txs": [tx_args],
         "blockNumber": "0x1",
         "stateBlockNumber": "latest"
     });
-    
+
     let result: serde_json::Value = client
         .call("eth_estimateGasBundle", json!([bundle_args]))
         .await?;
-    
+
     if let Some(results) = result.get("results").and_then(|v| v.as_array()) {
-        println!("  Estimated gas for {} transactions in bundle", results.len());
+        println!(
+            "  Estimated gas for {} transactions in bundle",
+            results.len()
+        );
     }
     Ok(())
 }
@@ -959,7 +1019,7 @@ async fn test_eth_estimate_gas_bundle(client: &RpcClient) -> Result<()> {
 async fn test_eth_call_bundle(client: &RpcClient) -> Result<()> {
     // Get current block number
     let block_num: String = client.call("eth_blockNumber", json!([])).await?;
-    
+
     // Create a simple bundle for testing
     // Note: In production, this would require properly signed RLP-encoded transactions
     let bundle_args = json!({
@@ -967,11 +1027,9 @@ async fn test_eth_call_bundle(client: &RpcClient) -> Result<()> {
         "blockNumber": block_num,
         "stateBlockNumber": "latest"
     });
-    
-    let result: serde_json::Value = client
-        .call("eth_callBundle", json!([bundle_args]))
-        .await?;
-    
+
+    let result: serde_json::Value = client.call("eth_callBundle", json!([bundle_args])).await?;
+
     if result.get("results").is_some() {
         println!("  Bundle simulation completed");
     }
@@ -995,11 +1053,11 @@ async fn test_eth_simulate_v1(client: &RpcClient) -> Result<()> {
             }]
         }]
     });
-    
+
     let result: serde_json::Value = client
         .call("eth_simulateV1", json!([block_state_call, "latest"]))
         .await?;
-    
+
     if let Some(blocks) = result.as_array() {
         println!("  Simulated {} blocks", blocks.len());
     }
@@ -1009,7 +1067,7 @@ async fn test_eth_simulate_v1(client: &RpcClient) -> Result<()> {
 async fn test_eth_calls(client: &RpcClient) -> Result<()> {
     // eth_calls executes multiple calls in sequence on the same state
     let contract = client.chain_type.sample_contract();
-    
+
     let calls = json!([
         {
             "to": contract,
@@ -1020,11 +1078,9 @@ async fn test_eth_calls(client: &RpcClient) -> Result<()> {
             "data": "0x70a082310000000000000000000000000000000000000000000000000000000000000000" // balanceOf(0x0)
         }
     ]);
-    
-    let results: serde_json::Value = client
-        .call("eth_calls", json!([calls, "latest"]))
-        .await?;
-    
+
+    let results: serde_json::Value = client.call("eth_calls", json!([calls, "latest"])).await?;
+
     if let Some(arr) = results.as_array() {
         println!("  Executed {} calls in sequence", arr.len());
     }
@@ -1036,22 +1092,24 @@ async fn test_eth_get_transaction_by_hash(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", true]))
         .await?;
-    
-    let txs = block["transactions"].as_array().context("No transactions array")?;
-    
-    if let Some(tx) = txs.first() {
-        if let Some(hash) = tx["hash"].as_str() {
-            let tx_detail: serde_json::Value = client
-                .call("eth_getTransactionByHash", json!([hash]))
-                .await?;
-            
-            if let Some(from) = tx_detail.get("from") {
-                println!("  Transaction from: {}", from);
-            }
-            return Ok(());
+
+    let txs = block["transactions"]
+        .as_array()
+        .context("No transactions array")?;
+
+    if let Some(tx) = txs.first()
+        && let Some(hash) = tx["hash"].as_str()
+    {
+        let tx_detail: serde_json::Value = client
+            .call("eth_getTransactionByHash", json!([hash]))
+            .await?;
+
+        if let Some(from) = tx_detail.get("from") {
+            println!("  Transaction from: {}", from);
         }
+        return Ok(());
     }
-    
+
     println!("  No transactions found in latest block");
     Ok(())
 }
@@ -1060,7 +1118,7 @@ async fn test_eth_get_block_receipts(client: &RpcClient) -> Result<()> {
     let receipts: serde_json::Value = client
         .call("eth_getBlockReceipts", json!(["latest"]))
         .await?;
-    
+
     if let Some(arr) = receipts.as_array() {
         println!("  Found {} receipts in latest block", arr.len());
     }
@@ -1072,63 +1130,86 @@ async fn test_debug_trace_transaction(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", true]))
         .await?;
-    
-    let txs = block["transactions"].as_array().context("No transactions array")?;
-    
-    if let Some(tx) = txs.first() {
-        if let Some(hash) = tx["hash"].as_str() {
-            let trace: serde_json::Value = client
-                .call("debug_traceTransaction", json!([hash, {"tracer": "callTracer"}]))
-                .await?;
-            
-            println!("  Trace type: {}", trace.get("type").and_then(|v| v.as_str()).unwrap_or("unknown"));
-            return Ok(());
-        }
+
+    let txs = block["transactions"]
+        .as_array()
+        .context("No transactions array")?;
+
+    if let Some(tx) = txs.first()
+        && let Some(hash) = tx["hash"].as_str()
+    {
+        let trace: serde_json::Value = client
+            .call(
+                "debug_traceTransaction",
+                json!([hash, {"tracer": "callTracer"}]),
+            )
+            .await?;
+
+        println!(
+            "  Trace type: {}",
+            trace
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        );
+        return Ok(());
     }
-    
+
     println!("  No transactions found to trace");
     Ok(())
 }
 
 async fn test_debug_trace_block_by_number(client: &RpcClient) -> Result<()> {
     let trace: serde_json::Value = client
-        .call("debug_traceBlockByNumber", json!(["latest", {"tracer": "callTracer"}]))
+        .call(
+            "debug_traceBlockByNumber",
+            json!(["latest", {"tracer": "callTracer"}]),
+        )
         .await?;
-    
+
     let traces = trace.as_array().context("Trace should be an array")?;
     println!("  Traced {} transactions in latest block", traces.len());
     Ok(())
 }
 
 async fn test_txpool_status(client: &RpcClient) -> Result<()> {
-    let status: serde_json::Value = client
-        .call("txpool_status", json!([]))
-        .await?;
-    
-    println!("  Pending: {}, Queued: {}", 
-        status.get("pending").and_then(|v| v.as_str()).unwrap_or("0"),
+    let status: serde_json::Value = client.call("txpool_status", json!([])).await?;
+
+    println!(
+        "  Pending: {}, Queued: {}",
+        status
+            .get("pending")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0"),
         status.get("queued").and_then(|v| v.as_str()).unwrap_or("0")
     );
     Ok(())
 }
 
 async fn test_txpool_content(client: &RpcClient) -> Result<()> {
-    let content: serde_json::Value = client
-        .call("txpool_content", json!([]))
-        .await?;
-    
-    let pending = content.get("pending").and_then(|v| v.as_object()).map(|o| o.len()).unwrap_or(0);
-    let queued = content.get("queued").and_then(|v| v.as_object()).map(|o| o.len()).unwrap_or(0);
-    
-    println!("  Pending accounts: {}, Queued accounts: {}", pending, queued);
+    let content: serde_json::Value = client.call("txpool_content", json!([])).await?;
+
+    let pending = content
+        .get("pending")
+        .and_then(|v| v.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+    let queued = content
+        .get("queued")
+        .and_then(|v| v.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+
+    println!(
+        "  Pending accounts: {}, Queued accounts: {}",
+        pending, queued
+    );
     Ok(())
 }
 
 async fn test_admin_node_info(client: &RpcClient) -> Result<()> {
-    let info: serde_json::Value = client
-        .call("admin_nodeInfo", json!([]))
-        .await?;
-    
+    let info: serde_json::Value = client.call("admin_nodeInfo", json!([])).await?;
+
     if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
         println!("  Node name: {}", name);
     }
@@ -1139,10 +1220,8 @@ async fn test_admin_node_info(client: &RpcClient) -> Result<()> {
 }
 
 async fn test_admin_peers(client: &RpcClient) -> Result<()> {
-    let peers: serde_json::Value = client
-        .call("admin_peers", json!([]))
-        .await?;
-    
+    let peers: serde_json::Value = client.call("admin_peers", json!([])).await?;
+
     let peer_list = peers.as_array().context("Peers should be an array")?;
     println!("  Connected peers: {}", peer_list.len());
     Ok(())
@@ -1153,7 +1232,7 @@ async fn test_admin_peers(client: &RpcClient) -> Result<()> {
 async fn test_eth_call_many(client: &RpcClient) -> Result<()> {
     // Get current block for blockOverride
     let block_num: String = client.call("eth_blockNumber", json!([])).await?;
-    
+
     // Base/Reth eth_callMany format
     let params = json!([
         [
@@ -1172,11 +1251,9 @@ async fn test_eth_call_many(client: &RpcClient) -> Result<()> {
         {},
         {}
     ]);
-    
-    let results: serde_json::Value = client
-        .call("eth_callMany", json!(params))
-        .await?;
-    
+
+    let _results: serde_json::Value = client.call("eth_callMany", json!(params)).await?;
+
     println!("  Executed eth_callMany successfully");
     Ok(())
 }
@@ -1186,30 +1263,28 @@ async fn test_trace_transaction(client: &RpcClient) -> Result<()> {
     let block: serde_json::Value = client
         .call("eth_getBlockByNumber", json!(["latest", true]))
         .await?;
-    
-    let txs = block["transactions"].as_array().context("No transactions array")?;
-    
-    if let Some(tx) = txs.first() {
-        if let Some(hash) = tx["hash"].as_str() {
-            let trace: serde_json::Value = client
-                .call("trace_transaction", json!([hash]))
-                .await?;
-            
-            let traces = trace.as_array().context("Trace should be an array")?;
-            println!("  Found {} traces for transaction", traces.len());
-            return Ok(());
-        }
+
+    let txs = block["transactions"]
+        .as_array()
+        .context("No transactions array")?;
+
+    if let Some(tx) = txs.first()
+        && let Some(hash) = tx["hash"].as_str()
+    {
+        let trace: serde_json::Value = client.call("trace_transaction", json!([hash])).await?;
+
+        let traces = trace.as_array().context("Trace should be an array")?;
+        println!("  Found {} traces for transaction", traces.len());
+        return Ok(());
     }
-    
+
     println!("  No transactions found to trace");
     Ok(())
 }
 
 async fn test_trace_block(client: &RpcClient) -> Result<()> {
-    let trace: serde_json::Value = client
-        .call("trace_block", json!(["latest"]))
-        .await?;
-    
+    let trace: serde_json::Value = client.call("trace_block", json!(["latest"])).await?;
+
     let traces = trace.as_array().context("Trace should be an array")?;
     println!("  Found {} traces in latest block", traces.len());
     Ok(())
@@ -1219,14 +1294,12 @@ async fn test_trace_block(client: &RpcClient) -> Result<()> {
 
 async fn test_parlia_get_snapshot(client: &RpcClient) -> Result<()> {
     // Get validator snapshot for Parlia consensus
-    let snapshot: serde_json::Value = client
-        .call("parlia_getSnapshot", json!(["latest"]))
-        .await?;
-    
-    if let Some(validators) = snapshot.get("validators") {
-        if let Some(arr) = validators.as_array() {
-            println!("  Validator count: {}", arr.len());
-        }
+    let snapshot: serde_json::Value = client.call("parlia_getSnapshot", json!(["latest"])).await?;
+
+    if let Some(validators) = snapshot.get("validators")
+        && let Some(arr) = validators.as_array()
+    {
+        println!("  Validator count: {}", arr.len());
     }
     Ok(())
 }
@@ -1234,11 +1307,11 @@ async fn test_parlia_get_snapshot(client: &RpcClient) -> Result<()> {
 async fn test_parlia_get_validators(client: &RpcClient) -> Result<()> {
     // Get current validators
     let block_num: String = client.call("eth_blockNumber", json!([])).await?;
-    
+
     let validators: serde_json::Value = client
         .call("parlia_getValidators", json!([block_num]))
         .await?;
-    
+
     if let Some(arr) = validators.as_array() {
         println!("  Active validators: {}", arr.len());
     }
@@ -1247,10 +1320,8 @@ async fn test_parlia_get_validators(client: &RpcClient) -> Result<()> {
 
 async fn test_eth_get_finalized_header(client: &RpcClient) -> Result<()> {
     // BSC has fast finality, can query finalized header
-    let header: serde_json::Value = client
-        .call("eth_getFinalizedHeader", json!([]))
-        .await?;
-    
+    let header: serde_json::Value = client.call("eth_getFinalizedHeader", json!([])).await?;
+
     if let Some(number) = header.get("number") {
         println!("  Finalized block: {}", number);
     }
@@ -1259,10 +1330,8 @@ async fn test_eth_get_finalized_header(client: &RpcClient) -> Result<()> {
 
 async fn test_eth_get_finalized_block(client: &RpcClient) -> Result<()> {
     // Get finalized block with transactions
-    let block: serde_json::Value = client
-        .call("eth_getFinalizedBlock", json!([false]))
-        .await?;
-    
+    let block: serde_json::Value = client.call("eth_getFinalizedBlock", json!([false])).await?;
+
     if let Some(number) = block.get("number") {
         println!("  Finalized block number: {}", number);
     }
@@ -1278,14 +1347,17 @@ async fn test_optimism_output_at_block(client: &RpcClient) -> Result<()> {
     let output: serde_json::Value = client
         .call("optimism_outputAtBlock", json!(["latest"]))
         .await?;
-    println!("  Output root available: {}", output.get("outputRoot").is_some());
+    println!(
+        "  Output root available: {}",
+        output.get("outputRoot").is_some()
+    );
     Ok(())
 }
 
 async fn test_arbitrum_get_l1_confirmations(client: &RpcClient) -> Result<()> {
     // Get latest block first
     let block_num: String = client.call("eth_blockNumber", json!([])).await?;
-    
+
     let confirmations: serde_json::Value = client
         .call("arb_getL1Confirmations", json!([block_num]))
         .await?;
@@ -1297,9 +1369,19 @@ async fn test_arbitrum_get_l1_confirmations(client: &RpcClient) -> Result<()> {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!("Multi-Chain EVM RPC Test Harness v{}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "Multi-Chain EVM RPC Test Harness v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("RPC URL: {}", args.url);
-    println!("Connection type: {}", if args.url.starts_with("ws") { "WebSocket" } else { "HTTP" });
+    println!(
+        "Connection type: {}",
+        if args.url.starts_with("ws") {
+            "WebSocket"
+        } else {
+            "HTTP"
+        }
+    );
     println!("Timeout: {}s", args.timeout);
 
     // Convert ws:// to http:// for initial detection calls
@@ -1321,22 +1403,31 @@ async fn main() -> Result<()> {
     let mut node_type = NodeType::Unknown;
 
     // Auto-detect chain and node type (use HTTP for detection)
-    let temp_client = RpcClient::new(http_url.clone(), args.timeout, false, ChainType::Unknown, NodeType::Unknown);
-    
+    let temp_client = RpcClient::new(
+        http_url.clone(),
+        args.timeout,
+        false,
+        ChainType::Unknown,
+        NodeType::Unknown,
+    );
+
     // Get chain ID
     if chain_type == ChainType::Unknown {
         println!("Auto-detecting chain type...");
-        if let Ok(chain_id) = temp_client.call::<String>("eth_chainId", json!([])).await {
-            if let Ok(id) = u64::from_str_radix(chain_id.trim_start_matches("0x"), 16) {
-                chain_type = ChainType::from_chain_id(id);
-            }
+        if let Ok(chain_id) = temp_client.call::<String>("eth_chainId", json!([])).await
+            && let Ok(id) = u64::from_str_radix(chain_id.trim_start_matches("0x"), 16)
+        {
+            chain_type = ChainType::from_chain_id(id);
         }
     }
 
     // Get client version to detect node type
     // Get client version to detect node type
     println!("Detecting node type...");
-    if let Ok(version) = temp_client.call::<String>("web3_clientVersion", json!([])).await {
+    if let Ok(version) = temp_client
+        .call::<String>("web3_clientVersion", json!([]))
+        .await
+    {
         node_type = NodeType::from_client_version(&version);
         println!("Client version: {}", version);
     } else {
@@ -1348,14 +1439,16 @@ async fn main() -> Result<()> {
         } else if args.url.contains("geth") || args.url.contains("GETH") {
             node_type = NodeType::Geth;
             println!("Detected Geth from URL");
-        } else if args.url.contains("optimism") || args.url.contains("unichain") || args.url.contains("ink") {
+        } else if args.url.contains("optimism")
+            || args.url.contains("unichain")
+            || args.url.contains("ink")
+        {
             node_type = NodeType::OpGeth; // Assume op-geth
             println!("Detected op-geth from URL");
         } else if args.url.contains("bsc") || args.url.contains("binance") {
             node_type = NodeType::BSCGeth;
             println!("Detected BSC-Geth from URL");
-        }
-        else {
+        } else {
             println!("Could not detect node type");
         }
     }
@@ -1367,127 +1460,218 @@ async fn main() -> Result<()> {
         println!("Filter: Only running tests matching '{}'\n", f);
     }
 
-    let client = RpcClient::new(args.url, args.timeout, args.verbose, chain_type.clone(), node_type.clone());
+    let client = RpcClient::new(
+        args.url,
+        args.timeout,
+        args.verbose,
+        chain_type.clone(),
+        node_type.clone(),
+    );
     let mut results = TestResults::new();
 
     println!("=== Core EVM RPC Methods ===\n");
-    
+
     run_test(&mut results, "eth_chainId", &args.filter, false, || {
         test_eth_chain_id(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_blockNumber", &args.filter, false, || {
         test_eth_block_number(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_gasPrice", &args.filter, false, || {
         test_eth_gas_price(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_getBalance", &args.filter, false, || {
         test_eth_get_balance(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getTransactionCount", &args.filter, false, || {
-        test_eth_get_transaction_count(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getBlockByNumber (no txs)", &args.filter, false, || {
-        test_eth_get_block_by_number(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getBlockByHash", &args.filter, false, || {
-        test_eth_get_block_by_hash(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getBlockByNumber (with txs)", &args.filter, false, || {
-        test_eth_get_block_with_txs(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getTransactionByBlockHashAndIndex", &args.filter, false, || {
-        test_eth_get_transaction_by_block_hash_and_index(&client)
-    }).await;
-    
+    })
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getTransactionCount",
+        &args.filter,
+        false,
+        || test_eth_get_transaction_count(&client),
+    )
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getBlockByNumber (no txs)",
+        &args.filter,
+        false,
+        || test_eth_get_block_by_number(&client),
+    )
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getBlockByHash",
+        &args.filter,
+        false,
+        || test_eth_get_block_by_hash(&client),
+    )
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getBlockByNumber (with txs)",
+        &args.filter,
+        false,
+        || test_eth_get_block_with_txs(&client),
+    )
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getTransactionByBlockHashAndIndex",
+        &args.filter,
+        false,
+        || test_eth_get_transaction_by_block_hash_and_index(&client),
+    )
+    .await;
+
     run_test(&mut results, "eth_call", &args.filter, false, || {
         test_eth_call(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_estimateGas", &args.filter, false, || {
         test_eth_estimate_gas(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_feeHistory", &args.filter, false, || {
         test_eth_fee_history(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_getLogs", &args.filter, false, || {
         test_eth_get_logs(&client)
-    }).await;
-    
+    })
+    .await;
+
     run_test(&mut results, "eth_getCode", &args.filter, false, || {
         test_eth_get_code(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getTransactionReceipt", &args.filter, false, || {
-        test_eth_get_transaction_receipt(&client)
-    }).await;
-    
-    run_test(&mut results, "eth_getTransactionByHash", &args.filter, false, || {
-        test_eth_get_transaction_by_hash(&client)
-    }).await;
-    
+    })
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getTransactionReceipt",
+        &args.filter,
+        false,
+        || test_eth_get_transaction_receipt(&client),
+    )
+    .await;
+
+    run_test(
+        &mut results,
+        "eth_getTransactionByHash",
+        &args.filter,
+        false,
+        || test_eth_get_transaction_by_hash(&client),
+    )
+    .await;
+
     run_test(&mut results, "net_version", &args.filter, false, || {
         test_net_version(&client)
-    }).await;
-    
-    run_test(&mut results, "web3_clientVersion", &args.filter, false, || {
-        test_web3_client_version(&client)
-    }).await;
+    })
+    .await;
+
+    run_test(
+        &mut results,
+        "web3_clientVersion",
+        &args.filter,
+        false,
+        || test_web3_client_version(&client),
+    )
+    .await;
 
     // Chain-specific tests
     if !args.skip_chain_specific {
         match client.chain_type {
             ChainType::Optimism => {
                 println!("\n=== Optimism-Specific Methods ===\n");
-                run_test(&mut results, "optimism_outputAtBlock", &args.filter, true, || {
-                    test_optimism_output_at_block(&client)
-                }).await;
+                run_test(
+                    &mut results,
+                    "optimism_outputAtBlock",
+                    &args.filter,
+                    true,
+                    || test_optimism_output_at_block(&client),
+                )
+                .await;
             }
             ChainType::Arbitrum => {
                 println!("\n=== Arbitrum-Specific Methods ===\n");
-                run_test(&mut results, "arb_getL1Confirmations", &args.filter, true, || {
-                    test_arbitrum_get_l1_confirmations(&client)
-                }).await;
+                run_test(
+                    &mut results,
+                    "arb_getL1Confirmations",
+                    &args.filter,
+                    true,
+                    || test_arbitrum_get_l1_confirmations(&client),
+                )
+                .await;
             }
             ChainType::Ethereum => {
                 println!("\n=== Ethereum Mainnet ===\n");
             }
-            ChainType::BSC => {
+            ChainType::Bsc => {
                 println!("\n=== BSC-Specific Methods ===\n");
-                
+
                 // Parlia consensus methods
-                run_test(&mut results, "parlia_getSnapshot", &args.filter, true, || {
-                    test_parlia_get_snapshot(&client)
-                }).await;
-                
-                run_test(&mut results, "parlia_getValidators", &args.filter, true, || {
-                    test_parlia_get_validators(&client)
-                }).await;
-                
+                run_test(
+                    &mut results,
+                    "parlia_getSnapshot",
+                    &args.filter,
+                    true,
+                    || test_parlia_get_snapshot(&client),
+                )
+                .await;
+
+                run_test(
+                    &mut results,
+                    "parlia_getValidators",
+                    &args.filter,
+                    true,
+                    || test_parlia_get_validators(&client),
+                )
+                .await;
+
                 // Fast finality methods
-                run_test(&mut results, "eth_getFinalizedHeader", &args.filter, true, || {
-                    test_eth_get_finalized_header(&client)
-                }).await;
-                
-                run_test(&mut results, "eth_getFinalizedBlock", &args.filter, true, || {
-                    test_eth_get_finalized_block(&client)
-                }).await;
+                run_test(
+                    &mut results,
+                    "eth_getFinalizedHeader",
+                    &args.filter,
+                    true,
+                    || test_eth_get_finalized_header(&client),
+                )
+                .await;
+
+                run_test(
+                    &mut results,
+                    "eth_getFinalizedBlock",
+                    &args.filter,
+                    true,
+                    || test_eth_get_finalized_block(&client),
+                )
+                .await;
             }
             ChainType::Base => {
                 println!("\n=== Base (no chain-specific methods) ===\n");
-                run_test(&mut results, "optimism_outputAtBlock", &args.filter, true, || {
-                    test_optimism_output_at_block(&client)
-                }).await;
+                run_test(
+                    &mut results,
+                    "optimism_outputAtBlock",
+                    &args.filter,
+                    true,
+                    || test_optimism_output_at_block(&client),
+                )
+                .await;
             }
             ChainType::Unknown => {
                 println!("\n=== Unknown chain - skipping chain-specific tests ===\n");
@@ -1498,137 +1682,199 @@ async fn main() -> Result<()> {
         match client.node_type {
             NodeType::Geth => {
                 println!("\n=== Geth-Specific Methods ===\n");
-                
+
                 // Flashbots/MEV bundle methods (69.3% + 9.9% = 79.2% of traffic!)
-                run_test(&mut results, "eth_estimateGasBundle", &args.filter, true, || {
-                    test_eth_estimate_gas_bundle(&client)
-                }).await;
-                
+                run_test(
+                    &mut results,
+                    "eth_estimateGasBundle",
+                    &args.filter,
+                    true,
+                    || test_eth_estimate_gas_bundle(&client),
+                )
+                .await;
+
                 run_test(&mut results, "eth_callBundle", &args.filter, true, || {
                     test_eth_call_bundle(&client)
-                }).await;
-                
+                })
+                .await;
+
                 // Simulation methods (4.6% of traffic)
                 run_test(&mut results, "eth_simulateV1", &args.filter, true, || {
                     test_eth_simulate_v1(&client)
-                }).await;
-                
+                })
+                .await;
+
                 // Batch call method (0.0% but implemented)
                 run_test(&mut results, "eth_calls", &args.filter, true, || {
                     test_eth_calls(&client)
-                }).await;
-                
+                })
+                .await;
+
                 // Block receipts (0.0% but available)
-                run_test(&mut results, "eth_getBlockReceipts", &args.filter, true, || {
-                    test_eth_get_block_receipts(&client)
-                }).await;
-                
+                run_test(
+                    &mut results,
+                    "eth_getBlockReceipts",
+                    &args.filter,
+                    true,
+                    || test_eth_get_block_receipts(&client),
+                )
+                .await;
+
                 // Debug namespace
                 if client.node_type.supports_debug_namespace() {
-                    run_test(&mut results, "debug_traceTransaction", &args.filter, true, || {
-                        test_debug_trace_transaction(&client)
-                    }).await;
-                    
-                    run_test(&mut results, "debug_traceBlockByNumber", &args.filter, true, || {
-                        test_debug_trace_block_by_number(&client)
-                    }).await;
+                    run_test(
+                        &mut results,
+                        "debug_traceTransaction",
+                        &args.filter,
+                        true,
+                        || test_debug_trace_transaction(&client),
+                    )
+                    .await;
+
+                    run_test(
+                        &mut results,
+                        "debug_traceBlockByNumber",
+                        &args.filter,
+                        true,
+                        || test_debug_trace_block_by_number(&client),
+                    )
+                    .await;
                 }
-                
+
                 // Txpool namespace
                 run_test(&mut results, "txpool_status", &args.filter, true, || {
                     test_txpool_status(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "txpool_content", &args.filter, true, || {
                     test_txpool_content(&client)
-                }).await;
-                
+                })
+                .await;
+
                 // Admin namespace (may not be exposed on public nodes)
                 run_test(&mut results, "admin_nodeInfo", &args.filter, true, || {
                     test_admin_node_info(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "admin_peers", &args.filter, true, || {
                     test_admin_peers(&client)
-                }).await;
+                })
+                .await;
             }
             NodeType::OpGeth => {
                 println!("\n=== op-geth Methods (Standard Geth APIs only) ===\n");
-                
+
                 // Only standard Geth methods, no custom bundle/simulation APIs
                 if client.node_type.supports_debug_namespace() {
-                    run_test(&mut results, "debug_traceTransaction", &args.filter, true, || {
-                        test_debug_trace_transaction(&client)
-                    }).await;
-                    
-                    run_test(&mut results, "debug_traceBlockByNumber", &args.filter, true, || {
-                        test_debug_trace_block_by_number(&client)
-                    }).await;
+                    run_test(
+                        &mut results,
+                        "debug_traceTransaction",
+                        &args.filter,
+                        true,
+                        || test_debug_trace_transaction(&client),
+                    )
+                    .await;
+
+                    run_test(
+                        &mut results,
+                        "debug_traceBlockByNumber",
+                        &args.filter,
+                        true,
+                        || test_debug_trace_block_by_number(&client),
+                    )
+                    .await;
                 }
-                
+
                 run_test(&mut results, "txpool_status", &args.filter, true, || {
                     test_txpool_status(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "txpool_content", &args.filter, true, || {
                     test_txpool_content(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "admin_nodeInfo", &args.filter, true, || {
                     test_admin_node_info(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "admin_peers", &args.filter, true, || {
                     test_admin_peers(&client)
-                }).await;
+                })
+                .await;
             }
             NodeType::BSCGeth => {
                 println!("\n=== BSC-Geth Methods (Standard Geth APIs only) ===\n");
-                
+
                 // Only standard Geth methods, no custom bundle/simulation APIs
                 if client.node_type.supports_debug_namespace() {
-                    run_test(&mut results, "debug_traceTransaction", &args.filter, true, || {
-                        test_debug_trace_transaction(&client)
-                    }).await;
-                    
-                    run_test(&mut results, "debug_traceBlockByNumber", &args.filter, true, || {
-                        test_debug_trace_block_by_number(&client)
-                    }).await;
+                    run_test(
+                        &mut results,
+                        "debug_traceTransaction",
+                        &args.filter,
+                        true,
+                        || test_debug_trace_transaction(&client),
+                    )
+                    .await;
+
+                    run_test(
+                        &mut results,
+                        "debug_traceBlockByNumber",
+                        &args.filter,
+                        true,
+                        || test_debug_trace_block_by_number(&client),
+                    )
+                    .await;
                 }
-                
+
                 run_test(&mut results, "txpool_status", &args.filter, true, || {
                     test_txpool_status(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "txpool_content", &args.filter, true, || {
                     test_txpool_content(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "admin_nodeInfo", &args.filter, true, || {
                     test_admin_node_info(&client)
-                }).await;
-                
+                })
+                .await;
+
                 run_test(&mut results, "admin_peers", &args.filter, true, || {
                     test_admin_peers(&client)
-                }).await;
+                })
+                .await;
             }
             NodeType::Reth | NodeType::OpReth => {
                 println!("\n=== Reth-Specific Methods ===\n");
-                
+
                 // eth_callMany (8.6% of Reth traffic)
                 run_test(&mut results, "eth_callMany", &args.filter, true, || {
                     test_eth_call_many(&client)
-                }).await;
-                
+                })
+                .await;
+
                 // Trace namespace
                 if client.node_type.supports_trace_namespace() {
-                    run_test(&mut results, "trace_transaction", &args.filter, true, || {
-                        test_trace_transaction(&client)
-                    }).await;
-                    
+                    run_test(
+                        &mut results,
+                        "trace_transaction",
+                        &args.filter,
+                        true,
+                        || test_trace_transaction(&client),
+                    )
+                    .await;
+
                     run_test(&mut results, "trace_block", &args.filter, true, || {
                         test_trace_block(&client)
-                    }).await;
+                    })
+                    .await;
                 }
             }
             NodeType::Nitro => {
@@ -1645,23 +1891,46 @@ async fn main() -> Result<()> {
     if args.test_subscriptions {
         if client.is_websocket {
             println!("\n=== WebSocket Subscription Tests ===\n");
-            println!("Listening duration: {}s per subscription\n", args.subscription_duration);
-            
-            run_test(&mut results, "eth_subscribe (newHeads)", &args.filter, false, || {
-                test_subscribe_new_heads(&client, args.subscription_duration)
-            }).await;
-            
-            run_test(&mut results, "eth_subscribe (logs)", &args.filter, false, || {
-                test_subscribe_logs(&client, args.subscription_duration)
-            }).await;
-            
-            run_test(&mut results, "eth_subscribe (newPendingTransactions)", &args.filter, false, || {
-                test_subscribe_pending_transactions(&client, args.subscription_duration)
-            }).await;
-            
-            run_test(&mut results, "eth_subscribe (syncing)", &args.filter, false, || {
-                test_subscribe_syncing(&client, args.subscription_duration)
-            }).await;
+            println!(
+                "Listening duration: {}s per subscription\n",
+                args.subscription_duration
+            );
+
+            run_test(
+                &mut results,
+                "eth_subscribe (newHeads)",
+                &args.filter,
+                false,
+                || test_subscribe_new_heads(&client, args.subscription_duration),
+            )
+            .await;
+
+            run_test(
+                &mut results,
+                "eth_subscribe (logs)",
+                &args.filter,
+                false,
+                || test_subscribe_logs(&client, args.subscription_duration),
+            )
+            .await;
+
+            run_test(
+                &mut results,
+                "eth_subscribe (newPendingTransactions)",
+                &args.filter,
+                false,
+                || test_subscribe_pending_transactions(&client, args.subscription_duration),
+            )
+            .await;
+
+            run_test(
+                &mut results,
+                "eth_subscribe (syncing)",
+                &args.filter,
+                false,
+                || test_subscribe_syncing(&client, args.subscription_duration),
+            )
+            .await;
         } else {
             println!("\n=== WebSocket Subscription Tests ===\n");
             println!("⚠ Skipped: WebSocket URL required (use ws:// or wss://)\n");
